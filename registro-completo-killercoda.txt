@@ -1,1 +1,527 @@
+root@controlplane:~$ kubectl get nodes                     
+NAME           STATUS   ROLES           AGE    VERSION
+controlplane   Ready    control-plane   7d4h   v1.37.1
+node01         Ready    <none>          7d4h   v1.37.1
+root@controlplane:~$ kubectl create namespace simulado-nuvem
+namespace/simulado-nuvem created
+root@controlplane:~$ kubectl get namespace simulado-nuvem
+NAME             STATUS   AGE
+simulado-nuvem   Active   47s
+root@controlplane:~$ mkdir -p manifests
+root@controlplane:~$ cat <<'EOF' > manifests/01-configmap-v1.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pagina
+  namespace: simulado-nuvem
+data:
+  index.html: |
+    <h1>Simulado Cloud - Versao 1</h1>
+EOF
+root@controlplane:~$ kubectl apply -f manifests/01-configmap-v1.yaml
+configmap/pagina created
+root@controlplane:~$ kubectl get configmap -n simulado-nuvem
+NAME               DATA   AGE
+kube-root-ca.crt   1      2m15s
+pagina             1      6s
+root@controlplane:~$ kubectl -n simulado-nuvem create secret generic senha-app --from-literal=token=valor-ficticio-2026
+secret/senha-app created
+root@controlplane:~$ kubectl get secrets -n simulado-nuvem
+NAME        TYPE     DATA   AGE
+senha-app   Opaque   1      18s
+root@controlplane:~$ cat <<'EOF' > manifests/03-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: leitor-web
+  namespace: simulado-nuvem
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: leitura-pods
+  namespace: simulado-nuvem
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: leitor-web-binding
+  namespace: simulado-nuvem
+subjects:
+- kind: ServiceAccount
+  name: leitor-web
+  namespace: simulado-nuvem
+roleRef:
+  kind: Role
+  name: leitura-pods
+  apiGroup: rbac.authorization.k8s.io
+EOF
+root@controlplane:~$ kubectl apply -f manifests/03-rbac.yaml
+serviceaccount/leitor-web created
+role.rbac.authorization.k8s.io/leitura-pods created
+rolebinding.rbac.authorization.k8s.io/leitor-web-binding created
+root@controlplane:~$ kubectl auth can-i list pods -n simulado-nuvem --as=system:serviceaccount:simulado-nuvem:leitor-web
+yes
+root@controlplane:~$ kubectl auth can-i delete pods -n simulado-nuvem --as=system:serviceaccount:simulado-nuvem:leitor-web
+no
+root@controlplane:~$ cat <<'EOF' > manifests/04-web.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: simulado-nuvem
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      serviceAccountName: leitor-web
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        env:
+        - name: TOKEN_TESTE
+          valueFrom:
+            secretKeyRef:
+              name: senha-app
+              key: token
+        volumeMounts:
+        - name: pagina-html
+          mountPath: /usr/share/nginx/html
+        readinessProbe:
+          httpGet:
+            path: /index.html
+            port: 80
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+      volumes:
+      - name: pagina-html
+        configMap:
+          name: pagina
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: simulado-nuvem
+spec:
+  type: ClusterIP
+  selector:
+EOF targetPort: 80
+root@controlplane:~$ kubectl apply -f manifests/04-web.yaml
+deployment.apps/web created
+service/web created
+root@controlplane:~$ kubectl -n simulado-nuvem rollout status deployment/web
+Waiting for deployment "web" rollout to finish: 0 of 2 updated replicas are available...
+Waiting for deployment "web" rollout to finish: 1 of 2 updated replicas are available...
+deployment "web" successfully rolled out
+root@controlplane:~$ kubectl -n simulado-nuvem get deployment,pods,service
+NAME                  READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/web   2/2     2            2           12s
 
+NAME                      READY   STATUS    RESTARTS   AGE
+pod/web-58ff89c66-tqf7x   1/1     Running   0          11s
+pod/web-58ff89c66-z8jx4   1/1     Running   0          11s
+
+NAME          TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE
+service/web   ClusterIP   10.108.3.220   <none>        80/TCP    12s
+root@controlplane:~$ cat manifests/04-web.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: simulado-nuvem
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      serviceAccountName: leitor-web
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        env:
+        - name: TOKEN_TESTE
+          valueFrom:
+            secretKeyRef:
+              name: senha-app
+              key: token
+        volumeMounts:
+        - name: pagina-html
+          mountPath: /usr/share/nginx/html
+        readinessProbe:
+          httpGet:
+            path: /index.html
+            port: 80
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+      volumes:
+      - name: pagina-html
+        configMap:
+          name: pagina
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: simulado-nuvem
+spec:
+  type: ClusterIP
+  selector:
+    app: web
+  ports:
+  - port: 80
+    targetPort: 80
+root@controlplane:~$ kubectl apply -f manifests/04-web.yaml
+deployment.apps/web unchanged
+service/web unchanged
+root@controlplane:~$ kubectl -n simulado-nuvem get endpoints web
+Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+NAME   ENDPOINTS                          AGE
+web    192.168.1.160:80,192.168.1.25:80   76s
+root@controlplane:~$ kubectl -n simulado-nuvem run cliente --image=busybox:1.36 --restart=Never --command -- sleep 3600
+pod/cliente created
+root@controlplane:~$ kubectl -n simulado-nuvem wait --for=condition=Ready pod/cliente --timeout=90s
+pod/cliente condition met
+root@controlplane:~$ kubectl -n simulado-nuvem exec cliente -- wget -qO- http://web
+<h1>Simulado Cloud - Versao 1</h1>
+root@controlplane:~$ kubectl -n simulado-nuvem describe deployment web
+Name:                   web
+Namespace:              simulado-nuvem
+CreationTimestamp:      Thu, 12 Nov 2026 15:58:11 +0000
+Labels:                 <none>
+Annotations:            deployment.kubernetes.io/revision: 1
+Selector:               app=web
+Replicas:               2 desired | 2 updated | 2 total | 2 available | 0 unavailable
+StrategyType:           RollingUpdate
+MinReadySeconds:        0
+RollingUpdateStrategy:  25% max unavailable, 25% max surge
+Pod Template:
+  Labels:           app=web
+  Service Account:  leitor-web
+  Containers:
+   nginx:
+    Image:      nginx:alpine
+    Port:       80/TCP
+    Host Port:  0/TCP
+    Liveness:   http-get http://:80/ delay=0s timeout=1s period=10s successThreshold=1 failureThreshold=3
+    Readiness:  http-get http://:80/index.html delay=0s timeout=1s period=10s successThreshold=1 failureThreshold=3
+    Environment:
+      TOKEN_TESTE:  <set to the key 'token' in secret 'senha-app'>  Optional: false
+    Mounts:
+      /usr/share/nginx/html from pagina-html (rw)
+  Volumes:
+   pagina-html:
+    Type:          ConfigMap (a volume populated by a ConfigMap)
+    Name:          pagina
+    Optional:      false
+  Node-Selectors:  <none>
+  Tolerations:     <none>
+Conditions:
+  Type           Status  Reason
+  ----           ------  ------
+  Available      True    MinimumReplicasAvailable
+  Progressing    True    NewReplicaSetAvailable
+OldReplicaSets:  <none>
+NewReplicaSet:   web-58ff89c66 (2/2 replicas created)
+Events:
+  Type    Reason             Age    From                   Message
+  ----    ------             ----   ----                   -------
+  Normal  ScalingReplicaSet  2m33s  deployment-controller  Scaled up replica set web-58ff89c66 from 0 to 2
+root@controlplane:~$ kubectl -n simulado-nuvem get events --sort-by=.lastTimestamp
+LAST SEEN   TYPE      REASON              OBJECT                     MESSAGE
+2m38s       Normal    Scheduled           pod/web-58ff89c66-z8jx4    Successfully assigned simulado-nuvem/web-58ff89c66-z8jx4 to node01
+2m38s       Normal    ScalingReplicaSet   deployment/web             Scaled up replica set web-58ff89c66 from 0 to 2
+2m38s       Normal    SuccessfulCreate    replicaset/web-58ff89c66   Created pod: web-58ff89c66-tqf7x
+2m38s       Normal    SuccessfulCreate    replicaset/web-58ff89c66   Created pod: web-58ff89c66-z8jx4
+2m38s       Normal    Scheduled           pod/web-58ff89c66-tqf7x    Successfully assigned simulado-nuvem/web-58ff89c66-tqf7x to node01
+2m35s       Normal    Pulling             pod/web-58ff89c66-z8jx4    Pulling image "nginx:alpine"
+2m35s       Normal    Pulling             pod/web-58ff89c66-tqf7x    Pulling image "nginx:alpine"
+2m31s       Warning   Unhealthy           pod/web-58ff89c66-tqf7x    Readiness probe failed: Get "http://192.168.1.25:80/index.html": dial tcp 192.168.1.25:80: connect: connection refused
+2m31s       Normal    Created             pod/web-58ff89c66-tqf7x    Container created
+2m31s       Normal    Started             pod/web-58ff89c66-tqf7x    Container started
+2m31s       Normal    Pulled              pod/web-58ff89c66-tqf7x    Successfully pulled image "nginx:alpine" in 4.213s (4.213s including waiting). Image size: 26368486 bytes.
+2m30s       Normal    Pulled              pod/web-58ff89c66-z8jx4    Successfully pulled image "nginx:alpine" in 567ms (4.733s including waiting). Image size: 26368486 bytes.
+2m30s       Normal    Created             pod/web-58ff89c66-z8jx4    Container created
+2m30s       Normal    Started             pod/web-58ff89c66-z8jx4    Container started
+2m30s       Warning   Unhealthy           pod/web-58ff89c66-z8jx4    Readiness probe failed: Get "http://192.168.1.160:80/index.html": dial tcp 192.168.1.160:80: connect: connection refused
+49s         Normal    Scheduled           pod/cliente                Successfully assigned simulado-nuvem/cliente to node01
+48s         Normal    Pulling             pod/cliente                Pulling image "busybox:1.36"
+42s         Normal    Started             pod/cliente                Container started
+42s         Normal    Created             pod/cliente                Container created
+42s         Normal    Pulled              pod/cliente                Successfully pulled image "busybox:1.36" in 5.74s (5.74s including waiting). Image size: 2217006 bytes.
+root@controlplane:~$ kubectl -n simulado-nuvem logs deployment/web
+Found 2 pods, using pod/web-58ff89c66-tqf7x
+/docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration
+/docker-entrypoint.sh: Looking for shell scripts in /docker-entrypoint.d/
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+10-listen-on-ipv6-by-default.sh: info: Getting the checksum of /etc/nginx/conf.d/default.conf
+10-listen-on-ipv6-by-default.sh: info: Enabled listen on IPv6 in /etc/nginx/conf.d/default.conf
+/docker-entrypoint.sh: Sourcing /docker-entrypoint.d/15-local-resolvers.envsh
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/20-envsubst-on-templates.sh
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh
+/docker-entrypoint.sh: Configuration complete; ready for start up
+2026/11/12 15:58:19 [notice] 1#1: using the "epoll" event method
+2026/11/12 15:58:19 [notice] 1#1: nginx/1.31.8
+2026/11/12 15:58:19 [notice] 1#1: built by gcc 15.2.0 (Alpine 15.2.0) 
+2026/11/12 15:58:19 [notice] 1#1: OS: Linux 6.8.0-147-generic
+2026/11/12 15:58:19 [notice] 1#1: getrlimit(RLIMIT_NOFILE): 1024:524288
+2026/11/12 15:58:19 [notice] 1#1: start worker processes
+2026/11/12 15:58:19 [notice] 1#1: start worker process 30
+192.168.1.92 - - [12/Nov/2026:15:58:20 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:58:22 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:58:30 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:58:32 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:58:40 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:58:42 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:58:50 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:58:52 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:59:00 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:59:02 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:59:10 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:59:12 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:59:20 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:59:22 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:59:30 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:59:32 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:59:40 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:59:42 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:59:50 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:15:59:52 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:16:00:00 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:16:00:02 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:16:00:10 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:16:00:12 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.47 - - [12/Nov/2026:16:00:16 +0000] "GET / HTTP/1.1" 200 35 "-" "Wget" "-"
+192.168.1.92 - - [12/Nov/2026:16:00:20 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:16:00:22 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:16:00:30 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:16:00:32 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:16:00:40 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:16:00:42 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:16:00:50 +0000] "GET /index.html HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+192.168.1.92 - - [12/Nov/2026:16:00:52 +0000] "GET / HTTP/1.1" 200 35 "-" "kube-probe/1.37" "-"
+root@controlplane:~$ kubectl -n simulado-nuvem scale deployment web --replicas=3
+deployment.apps/web scaled
+root@controlplane:~$ kubectl -n simulado-nuvem get pods
+NAME                  READY   STATUS    RESTARTS   AGE
+cliente               1/1     Running   0          2m14s
+web-58ff89c66-ftdv2   1/1     Running   0          5s
+web-58ff89c66-tqf7x   1/1     Running   0          4m3s
+web-58ff89c66-z8jx4   1/1     Running   0          4m3s
+root@controlplane:~$ kubectl -n simulado-nuvem scale deployment web --replicas=2
+deployment.apps/web scaled
+root@controlplane:~$ kubectl -n simulado-nuvem get pods
+NAME                  READY   STATUS    RESTARTS   AGE
+cliente               1/1     Running   0          2m50s
+web-58ff89c66-tqf7x   1/1     Running   0          4m39s
+web-58ff89c66-z8jx4   1/1     Running   0          4m39s
+root@controlplane:~$ kubectl -n simulado-nuvem get pods
+NAME                  READY   STATUS    RESTARTS   AGE
+cliente               1/1     Running   0          3m26s
+web-58ff89c66-tqf7x   1/1     Running   0          5m15s
+web-58ff89c66-z8jx4   1/1     Running   0          5m15s
+root@controlplane:~$ kubectl -n simulado-nuvem delete pod NOME_DO_POD
+Error from server (NotFound): pods "NOME_DO_POD" not found
+root@controlplane:~$ kubectl -n simulado-nuvem delete pod web-58ff89c66-tqf7x
+pod "web-58ff89c66-tqf7x" deleted from simulado-nuvem namespace
+root@controlplane:~$ kubectl -n simulado-nuvem get pods
+NAME                  READY   STATUS    RESTARTS   AGE
+cliente               1/1     Running   0          4m30s
+web-58ff89c66-rfzvh   1/1     Running   0          11s
+web-58ff89c66-z8jx4   1/1     Running   0          6m19s
+root@controlplane:~$ cat <<'EOF' > manifests/02-configmap-v2.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pagina
+  namespace: simulado-nuvem
+data:
+  index.html: |
+    <h1>Simulado Cloud - Versao 2</h1>
+EOF
+root@controlplane:~$ kubectl apply -f manifests/02-configmap-v2.yaml
+configmap/pagina configured
+root@controlplane:~$ kubectl -n simulado-nuvem rollout restart deployment/web
+deployment.apps/web restarted
+root@controlplane:~$ kubectl -n simulado-nuvem rollout status deployment/web
+deployment "web" successfully rolled out
+root@controlplane:~$ kubectl -n simulado-nuvem exec cliente -- wget -qO- http://web
+<h1>Simulado Cloud - Versao 2</h1>
+root@controlplane:~$ kubectl -n simulado-nuvem get pods
+NAME                   READY   STATUS    RESTARTS   AGE
+cliente                1/1     Running   0          6m15s
+web-7d88b4444d-dzbt4   1/1     Running   0          54s
+web-7d88b4444d-qqbrf   1/1     Running   0          53s
+root@controlplane:~$ kubectl -n simulado-nuvem set image deployment/web nginx=nginx:tag-inexistente-simulado
+deployment.apps/web image updated
+root@controlplane:~$ kubectl -n simulado-nuvem get pods
+NAME                   READY   STATUS         RESTARTS   AGE
+cliente                1/1     Running        0          6m39s
+web-768fcb8b5-rpzjb    0/1     ErrImagePull   0          5s
+web-7d88b4444d-dzbt4   1/1     Running        0          78s
+web-7d88b4444d-qqbrf   1/1     Running        0          77s
+root@controlplane:~$ kubectl -n simulado-nuvem get events --sort-by=.lastTimestamp
+LAST SEEN   TYPE      REASON              OBJECT                      MESSAGE
+8m35s       Normal    SuccessfulCreate    replicaset/web-58ff89c66    Created pod: web-58ff89c66-z8jx4
+8m35s       Normal    Scheduled           pod/web-58ff89c66-z8jx4     Successfully assigned simulado-nuvem/web-58ff89c66-z8jx4 to node01
+8m35s       Normal    ScalingReplicaSet   deployment/web              Scaled up replica set web-58ff89c66 from 0 to 2
+8m35s       Normal    Scheduled           pod/web-58ff89c66-tqf7x     Successfully assigned simulado-nuvem/web-58ff89c66-tqf7x to node01
+8m35s       Normal    SuccessfulCreate    replicaset/web-58ff89c66    Created pod: web-58ff89c66-tqf7x
+8m32s       Normal    Pulling             pod/web-58ff89c66-z8jx4     Pulling image "nginx:alpine"
+8m32s       Normal    Pulling             pod/web-58ff89c66-tqf7x     Pulling image "nginx:alpine"
+8m28s       Normal    Pulled              pod/web-58ff89c66-tqf7x     Successfully pulled image "nginx:alpine" in 4.213s (4.213s including waiting). Image size: 26368486 bytes.
+8m28s       Normal    Created             pod/web-58ff89c66-tqf7x     Container created
+8m28s       Normal    Started             pod/web-58ff89c66-tqf7x     Container started
+8m27s       Warning   Unhealthy           pod/web-58ff89c66-z8jx4     Readiness probe failed: Get "http://192.168.1.160:80/index.html": dial tcp 192.168.1.160:80: connect: connection refused
+8m27s       Normal    Started             pod/web-58ff89c66-z8jx4     Container started
+8m27s       Normal    Created             pod/web-58ff89c66-z8jx4     Container created
+8m27s       Normal    Pulled              pod/web-58ff89c66-z8jx4     Successfully pulled image "nginx:alpine" in 567ms (4.733s including waiting). Image size: 26368486 bytes.
+6m46s       Normal    Scheduled           pod/cliente                 Successfully assigned simulado-nuvem/cliente to node01
+6m45s       Normal    Pulling             pod/cliente                 Pulling image "busybox:1.36"
+6m39s       Normal    Started             pod/cliente                 Container started
+6m39s       Normal    Created             pod/cliente                 Container created
+6m39s       Normal    Pulled              pod/cliente                 Successfully pulled image "busybox:1.36" in 5.74s (5.74s including waiting). Image size: 2217006 bytes.
+4m37s       Normal    ScalingReplicaSet   deployment/web              Scaled up replica set web-58ff89c66 from 2 to 3
+4m37s       Normal    SuccessfulCreate    replicaset/web-58ff89c66    Created pod: web-58ff89c66-ftdv2
+4m37s       Normal    Scheduled           pod/web-58ff89c66-ftdv2     Successfully assigned simulado-nuvem/web-58ff89c66-ftdv2 to node01
+4m36s       Normal    Started             pod/web-58ff89c66-ftdv2     Container started
+4m36s       Warning   Unhealthy           pod/web-58ff89c66-ftdv2     Readiness probe failed: Get "http://192.168.1.40:80/index.html": dial tcp 192.168.1.40:80: connect: connection refused
+4m36s       Normal    Created             pod/web-58ff89c66-ftdv2     Container created
+4m36s       Normal    Pulled              pod/web-58ff89c66-ftdv2     Container image "nginx:alpine" already present on machine and can be accessed by the pod
+4m1s        Normal    ScalingReplicaSet   deployment/web              Scaled down replica set web-58ff89c66 from 3 to 2
+4m1s        Normal    Killing             pod/web-58ff89c66-ftdv2     Stopping container nginx
+4m1s        Normal    SuccessfulDelete    replicaset/web-58ff89c66    Deleted pod: web-58ff89c66-ftdv2
+2m27s       Normal    Killing             pod/web-58ff89c66-tqf7x     Stopping container nginx
+2m27s       Warning   Unhealthy           pod/web-58ff89c66-tqf7x     Readiness probe failed: Get "http://192.168.1.25:80/index.html": dial tcp 192.168.1.25:80: connect: connection refused
+2m27s       Normal    SuccessfulCreate    replicaset/web-58ff89c66    Created pod: web-58ff89c66-rfzvh
+2m27s       Normal    Scheduled           pod/web-58ff89c66-rfzvh     Successfully assigned simulado-nuvem/web-58ff89c66-rfzvh to node01
+2m26s       Warning   Unhealthy           pod/web-58ff89c66-rfzvh     Readiness probe failed: Get "http://192.168.1.151:80/index.html": dial tcp 192.168.1.151:80: connect: connection refused
+2m26s       Normal    Pulled              pod/web-58ff89c66-rfzvh     Container image "nginx:alpine" already present on machine and can be accessed by the pod
+2m26s       Normal    Created             pod/web-58ff89c66-rfzvh     Container created
+2m26s       Normal    Started             pod/web-58ff89c66-rfzvh     Container started
+85s         Normal    Scheduled           pod/web-7d88b4444d-dzbt4    Successfully assigned simulado-nuvem/web-7d88b4444d-dzbt4 to node01
+85s         Normal    ScalingReplicaSet   deployment/web              Scaled up replica set web-7d88b4444d from 0 to 1
+85s         Normal    SuccessfulCreate    replicaset/web-7d88b4444d   Created pod: web-7d88b4444d-dzbt4
+84s         Normal    Started             pod/web-7d88b4444d-dzbt4    Container started
+84s         Normal    SuccessfulDelete    replicaset/web-58ff89c66    Deleted pod: web-58ff89c66-rfzvh
+84s         Normal    ScalingReplicaSet   deployment/web              Scaled up replica set web-7d88b4444d from 1 to 2
+84s         Normal    ScalingReplicaSet   deployment/web              Scaled down replica set web-58ff89c66 from 2 to 1
+84s         Normal    Killing             pod/web-58ff89c66-rfzvh     Stopping container nginx
+84s         Normal    SuccessfulCreate    replicaset/web-7d88b4444d   Created pod: web-7d88b4444d-qqbrf
+84s         Normal    Pulled              pod/web-7d88b4444d-dzbt4    Container image "nginx:alpine" already present on machine and can be accessed by the pod
+84s         Normal    Created             pod/web-7d88b4444d-dzbt4    Container created
+84s         Normal    Scheduled           pod/web-7d88b4444d-qqbrf    Successfully assigned simulado-nuvem/web-7d88b4444d-qqbrf to node01
+84s         Warning   Unhealthy           pod/web-7d88b4444d-dzbt4    Readiness probe failed: Get "http://192.168.1.237:80/index.html": dial tcp 192.168.1.237:80: connect: connection refused
+83s         Normal    ScalingReplicaSet   deployment/web              Scaled down replica set web-58ff89c66 from 1 to 0
+83s         Normal    Pulled              pod/web-7d88b4444d-qqbrf    Container image "nginx:alpine" already present on machine and can be accessed by the pod
+83s         Normal    Created             pod/web-7d88b4444d-qqbrf    Container created
+83s         Normal    Started             pod/web-7d88b4444d-qqbrf    Container started
+83s         Warning   Unhealthy           pod/web-7d88b4444d-qqbrf    Readiness probe failed: Get "http://192.168.1.31:80/index.html": dial tcp 192.168.1.31:80: connect: connection refused
+83s         Normal    Killing             pod/web-58ff89c66-z8jx4     Stopping container nginx
+83s         Normal    SuccessfulDelete    replicaset/web-58ff89c66    Deleted pod: web-58ff89c66-z8jx4
+12s         Normal    Scheduled           pod/web-768fcb8b5-rpzjb     Successfully assigned simulado-nuvem/web-768fcb8b5-rpzjb to node01
+12s         Normal    ScalingReplicaSet   deployment/web              Scaled up replica set web-768fcb8b5 from 0 to 1
+12s         Normal    SuccessfulCreate    replicaset/web-768fcb8b5    Created pod: web-768fcb8b5-rpzjb
+11s         Normal    Pulling             pod/web-768fcb8b5-rpzjb     Pulling image "nginx:tag-inexistente-simulado"
+9s          Warning   Failed              pod/web-768fcb8b5-rpzjb     Failed to pull image "nginx:tag-inexistente-simulado": failed to pull and unpack image "docker.io/library/nginx:tag-inexistente-simulado": failed to resolve image: unexpected status from HEAD request to https://mirror.gcr.io/v2/library/nginx/manifests/tag-inexistente-simulado?ns=docker.io: 429 Too Many Requests
+9s          Warning   Failed              pod/web-768fcb8b5-rpzjb     Error: ErrImagePull
+8s          Normal    BackOff             pod/web-768fcb8b5-rpzjb     Back-off pulling image "nginx:tag-inexistente-simulado"
+8s          Warning   Failed              pod/web-768fcb8b5-rpzjb     Error: ImagePullBackOff
+root@controlplane:~$ kubectl -n simulado-nuvem rollout undo deployment/web
+Warning: resource deployments/web was previously managed with 'kubectl apply'. Rolling back will not update the kubectl.kubernetes.io/last-applied-configuration annotation, which may cause unexpected behavior on future 'kubectl apply' operations. Consider using 'kubectl apply' with your previous configuration file instead.
+deployment.apps/web rolled back
+root@controlplane:~$ kubectl -n simulado-nuvem rollout status deployment/web
+deployment "web" successfully rolled out
+root@controlplane:~$ kubectl -n simulado-nuvem get deployment web -o wide
+NAME   READY   UP-TO-DATE   AVAILABLE   AGE     CONTAINERS   IMAGES         SELECTOR
+web    2/2     2            2           9m51s   nginx        nginx:alpine   app=web
+root@controlplane:~$ kubectl -n simulado-nuvem get configmap pagina -o yaml
+apiVersion: v1
+data:
+  index.html: |
+    <h1>Simulado Cloud - Versao 2</h1>
+kind: ConfigMap
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","data":{"index.html":"\u003ch1\u003eSimulado Cloud - Versao 2\u003c/h1\u003e\n"},"kind":"ConfigMap","metadata":{"annotations":{},"name":"pagina","namespace":"simulado-nuvem"}}
+  creationTimestamp: "2026-11-12T15:55:41Z"
+  name: pagina
+  namespace: simulado-nuvem
+  resourceVersion: "23532"
+  uid: ca661fc4-d82d-4451-b165-35575743bfe9
+root@controlplane:~$ kubectl -n simulado-nuvem exec cliente -- wget -qO- http://web
+<h1>Simulado Cloud - Versao 2</h1>
+root@controlplane:~$ cat <<'EOF' > manifests/05-cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: verifica-web
+  namespace: simulado-nuvem
+spec:
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: verifica
+            image: busybox:1.36
+            command: ["/bin/sh", "-c"]
+            args:
+            - "wget -qO- http://web"
+          restartPolicy: OnFailure
+EOF
+root@controlplane:~$ kubectl apply -f manifests/05-cronjob.yaml
+cronjob.batch/verifica-web created
+root@controlplane:~$ kubectl apply -f manifests/05-cronjob.yaml
+cronjob.batch/verifica-web unchanged
+root@controlplane:~$ kubectl -n simulado-nuvem get cronjob
+NAME           SCHEDULE      TIMEZONE   SUSPEND   ACTIVE   LAST SCHEDULE   AGE
+verifica-web   */5 * * * *   <none>     False     0        <none>          28s
+root@controlplane:~$ kubectl -n simulado-nuvem create job teste-web --from=cronjob/verifica-web
+job.batch/teste-web created
+root@controlplane:~$ kubectl -n simulado-nuvem wait --for=condition=complete job/teste-web --timeout=120s
+job.batch/teste-web condition met
+root@controlplane:~$ kubectl -n simulado-nuvem logs job/teste-web
+<h1>Simulado Cloud - Versao 2</h1>
+root@controlplane:~$ ls -l manifests
+total 20
+-rw-r--r-- 1 root root  145 Nov 12 15:55 01-configmap-v1.yaml
+-rw-r--r-- 1 root root  145 Nov 12 16:05 02-configmap-v2.yaml
+-rw-r--r-- 1 root root  569 Nov 12 15:57 03-rbac.yaml
+-rw-r--r-- 1 root root 1033 Nov 12 15:58 04-web.yaml
+-rw-r--r-- 1 root root  391 Nov 12 16:09 05-cronjob.yaml
+root@controlplane:~$ kubectl apply --dry-run=client -f manifests/
+configmap/pagina configured (dry run)
+configmap/pagina unchanged (dry run)
+serviceaccount/leitor-web unchanged (dry run)
+role.rbac.authorization.k8s.io/leitura-pods unchanged (dry run)
+rolebinding.rbac.authorization.k8s.io/leitor-web-binding unchanged (dry run)
+deployment.apps/web unchanged (dry run)
+service/web unchanged (dry run)
+cronjob.batch/verifica-web unchanged (dry run)
+root@controlplane:~$ 
